@@ -86,7 +86,7 @@ io.on("connection", (socket) => {
         socket.emit("driverLocations", drivers);
     });
     socket.on("disconnect", () => __awaiter(void 0, void 0, void 0, function* () {
-        yield Driver.findOneAndUpdate({ socketId: socket.id }, { isActive: false });
+        yield Driver.findOneAndDelete({ socketId: socket.id, isActive: true });
         io.emit("driverCheck", socket.id);
         io.emit("active-drivers-updated");
         delete drivers[socket.id];

@@ -104,9 +104,8 @@ io.on("connection", (socket: Socket) => {
   });
 
   socket.on("disconnect", async () => {
-    await Driver.findOneAndUpdate(
-      { socketId: socket.id },
-      { isActive: false }
+    await Driver.findOneAndDelete(
+      { socketId: socket.id, isActive: true },
     );
     io.emit("driverCheck", socket.id);
     io.emit("active-drivers-updated");
