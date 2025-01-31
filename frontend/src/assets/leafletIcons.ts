@@ -1,7 +1,7 @@
 // icon imports
-import busIcon from "./BusIcon1.png";
+import busIcon from "./busfavicon.png";
 import markerShadow from "./marker-shadow.png";
-import busIcon2x from "./BusIcon-2x.png"; 
+import busIcon2x from "./busfavicon.png"; 
 
 import L from 'leaflet';
 
