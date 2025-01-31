@@ -1,13 +1,53 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Route, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet-routing-machine';
 import { LatLngExpression } from 'leaflet';
 import { motion, AnimatePresence } from 'framer-motion';
-import { AlertCircle, MessageSquare, User, Settings, Loader2, Search, MapIcon, Share2Icon, BookmarkIcon, CompassIcon, UserIcon, X, MapPin} from 'lucide-react';
+import { 
+  AlertCircle, MessageSquare, User, Settings, Loader2, 
+  Search, MapIcon, Share2Icon, BookmarkIcon, 
+  CompassIcon, UserIcon, X, MapPin, Navigation
+} from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
+import 'leaflet-routing-machine/dist/leaflet-routing-machine.css';
 import io from "socket.io-client";
 import '../assets/leafletIcons';
 
+// Custom Routing Control Component
+const RoutingControl = ({ start, end }: { start: LatLngExpression, end: LatLngExpression }) => {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!map) return;
+
+    const routingControl = L.Routing.control({
+      waypoints: [
+        L.latLng(start),
+        L.latLng(end)
+      ],
+      routeWhileDragging: false,
+      showAlternatives: true,
+      lineOptions: {
+        styles: [
+          { color: 'red', opacity: 0.7, weight: 5 }
+        ]
+      },
+      addWaypoints: false,
+      draggableWaypoints: false,
+      fitSelectedRoutes: true,
+    }).addTo(map);
+
+    return () => {
+      map.removeControl(routingControl);
+    };
+  }, [map, start, end]);
+
+  return null;
+};
+
+// Interfaces
 interface DriverLocation {
   id: string;
   position: LatLngExpression;
@@ -22,30 +62,45 @@ interface SearchResult {
 
 const UserView: React.FC = () => {
   const navigate = useNavigate();
+  
+  // Existing state
   const [driverLocations, setDriverLocations] = useState<DriverLocation[]>([]);
   const [followingDriverId, setFollowingDriverId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeDriversCount, setActiveDriversCount] = useState(0);
+  
+  // Profile and Search States
   const [showProfile, setShowProfile] = useState(false);
   const [showSearchBox, setShowSearchBox] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [selectedLocation, setSelectedLocation] = useState<SearchResult | null>(null);
 
+  // Routing States
+  const [routePoints, setRoutePoints] = useState<{
+    start: SearchResult | null,
+    end: SearchResult | null
+  }>({
+    start: null,
+    end: null
+  });
+  const [routingMode, setRoutingMode] = useState<'start' | 'end' | null>(null);
+
+  // Socket and Map References
   const socketRef = useRef(
     io(import.meta.env.VITE_BACKEND_URL, {
       autoConnect: false,
     })
   );
+  const mapRef = useRef<any>(null);
 
+  // Existing useEffect for socket connection and driver locations
   useEffect(() => {
     const socket = socketRef.current;
     socket.connect();
     socket.emit("user-connected");
 
+    // Existing socket event handlers for driver locations
     socket.on("driverLocationUpdate", (data: DriverLocation) => {
-      console.log("Received driver location update:", data);
-
       setDriverLocations((prevLocations) => {
         const existingDriverIndex = prevLocations.findIndex(
           (driver) => driver.id === data.id
@@ -72,9 +127,8 @@ const UserView: React.FC = () => {
       setIsLoading(false);
     });
 
+    // Existing socket event handlers
     socket.on("driverLocations", (drivers) => {
-      console.log("Received driver locations:", drivers);
-
       const updatedLocations = Object.entries(drivers).map(([id, position]) => ({
         id,
         position: position as LatLngExpression,
@@ -86,12 +140,12 @@ const UserView: React.FC = () => {
     });
 
     socket.on("driverCheck", (socketId) => {
-      console.log("Driver disconnected:", socketId);
       setDriverLocations((prevDrivers) =>
         prevDrivers.filter((driverObj) => driverObj.id !== socketId)
       );
     });
 
+    // Fetch active drivers count
     const fetchActiveDriversCount = async () => {
       try {
         const response = await fetch(`${import.meta.env.VITE_BACKEND_URL}/drivers/active-count`);
@@ -103,7 +157,6 @@ const UserView: React.FC = () => {
     };
 
     fetchActiveDriversCount();
-
     socket.on("active-drivers-updated", fetchActiveDriversCount);
 
     const intervalId = setInterval(fetchActiveDriversCount, 30000);
@@ -115,25 +168,7 @@ const UserView: React.FC = () => {
     };
   }, []);
 
-  const FollowDriverView = ({ driverId }: { driverId: string }) => {
-    const map = useMap();
-    const driver = driverLocations.find(d => d.id === driverId);
-
-    useEffect(() => {
-      if (driver && driver.position) {
-        map.setView(driver.position, 15);
-      }
-    }, [driver?.position]);
-
-    return null;
-  };
-
-  const handleProfile = () => {
-    setShowProfile(!showProfile);
-  };
-
-  const mapRef = useRef<any>(null);
-
+  // Search and Location Selection Handlers
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
 
@@ -144,32 +179,51 @@ const UserView: React.FC = () => {
       const results: SearchResult[] = await response.json();
       
       setSearchResults(results);
-      
-      if (results.length > 0) {
-        const firstResult = results[0];
-        setSelectedLocation(firstResult);
-        
-        // Zoom to location if map is available
-        if (mapRef.current) {
-          const map = mapRef.current;
-          map.setView([firstResult.lat, firstResult.lon], 13);
-        }
-      }
     } catch (error) {
       console.error('Search error:', error);
     }
   };
 
   const handleLocationSelect = (location: SearchResult) => {
-    setSelectedLocation(location);
+    const coords: LatLngExpression = [location.lat, location.lon];
+  
+    // Update route points based on routing mode
+    if (routingMode === 'start') {
+      setRoutePoints(prev => ({ ...prev, start: location }));
+    } else if (routingMode === 'end') {
+      setRoutePoints(prev => ({ ...prev, end: location }));
+    }
+  
+    // Zoom to location
     if (mapRef.current) {
       const map = mapRef.current;
-      map.setView([location.lat, location.lon], 13);
+      map.setView(coords, 13);
     }
+  
+    // Reset search-related states
     setSearchResults([]);
+    setShowSearchBox(false);
+    setRoutingMode(null);
   };
 
+  const getActiveDriverLocations = () => {
+    return driverLocations.filter(driver => driver.status === 'active');
+  };
+  
+  // Routing Control Methods
+  const startRouteSelection = (mode: 'start' | 'end') => {
+    setRoutingMode(mode);
+    setShowSearchBox(true);
+  };
 
+  const clearRoute = () => {
+    setRoutePoints({ start: null, end: null });
+  };
+
+  // Existing methods
+  const handleProfile = () => {
+    setShowProfile(!showProfile);
+  };
 
   return (
     <div className="h-screen relative flex flex-col bg-gray-900">
@@ -211,6 +265,7 @@ const UserView: React.FC = () => {
             </div>
           ) : (
             <MapContainer
+              ref={mapRef}
               center={[24.8607, 67.0011] as LatLngExpression}
               zoom={13}
               style={{ height: "100%", width: "100%" }}
@@ -221,10 +276,7 @@ const UserView: React.FC = () => {
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
               />
 
-              {followingDriverId && (
-                <FollowDriverView driverId={followingDriverId} />
-              )}
-
+              {/* Existing driver location markers */}
               {driverLocations.map((driver) => (
                 <React.Fragment key={driver.id}>
                   <Marker position={driver.position}>
@@ -241,10 +293,105 @@ const UserView: React.FC = () => {
                   )}
                 </React.Fragment>
               ))}
+
+              {/* Routing Markers */}
+              {routePoints.start && (
+                <Marker 
+                  position={[routePoints.start.lat, routePoints.start.lon]}
+                  icon={L.divIcon({
+                    className: 'custom-marker',
+                    html: `<div class="bg-green-500 w-6 h-6 rounded-full border-2 border-white"></div>`
+                  })}
+                />
+              )}
+
+              {routePoints.end && (
+                <Marker 
+                  position={[routePoints.end.lat, routePoints.end.lon]}
+                  icon={L.divIcon({
+                    className: 'custom-marker',
+                    html: `<div class="bg-red-500 w-6 h-6 rounded-full border-2 border-white"></div>`
+                  })}
+                />
+              )}
+
+              {/* Routing Control */}
+              {routePoints.start && routePoints.end && (
+                <RoutingControl 
+                  start={[routePoints.start.lat, routePoints.start.lon]}
+                  end={[routePoints.end.lat, routePoints.end.lon]}
+                />
+              )}
             </MapContainer>
           )}
         </div>
       </motion.div>
+
+      {/* Routing Buttons */}
+      <div className="absolute bottom-24 right-5 z-50 flex flex-col space-y-2">
+        <button 
+          onClick={() => startRouteSelection('start')}
+          className={`p-3 ${routePoints.start ? 'bg-green-500/50' : 'bg-blue-500/50'} rounded-full hover:scale-110 transition-all`}
+        >
+          <MapPin className="w-6 h-6 text-white" />
+        </button>
+
+        <button 
+          onClick={() => startRouteSelection('end')}
+          className={`p-3 ${routePoints.end ? 'bg-red-500/50' : 'bg-blue-500/50'} rounded-full hover:scale-110 transition-all`}
+        >
+          <MapPin className="w-6 h-6 text-white" />
+        </button>
+
+        {routePoints.start && routePoints.end && (
+          <button 
+            onClick={clearRoute}
+            className="p-3 bg-gray-500/50 rounded-full hover:scale-110 transition-all"
+          >
+            <X className="w-6 h-6 text-white" />
+          </button>
+        )}
+      </div>
+
+      {/* Search Box */}
+      {showSearchBox && (
+        <div className="absolute z-50 top-24 left-5 p-4 bg-gray-900/95 backdrop-blur-xl border-l border-white/20 shadow-2xl border rounded-lg w-80">
+          <div className="flex items-center justify-between mb-2">
+            <input
+              type="text"
+              placeholder="Search city, country..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+              className="border border-white/10 text-gray-100 p-2 w-full rounded-md mr-2 bg-gray-900/95 focus:outline-none"
+            />
+            <button onClick={handleSearch}>
+              <Search className="w-6 h-6 mr-5 text-gray-400 hover:text-gray-200" />
+            </button>
+            <button onClick={() => setShowSearchBox(false)}>
+              <X className="w-6 h-6 text-gray-400 hover:text-gray-200" />
+            </button>
+          </div>
+
+          {/* Search Results */}
+          {searchResults.length > 0 && (
+            <div className="max-h-48 overflow-y-auto bg-gray-800/50 rounded-md mt-2">
+              {searchResults.slice(0, 5).map((result, index) => (
+                <button
+                  key={index}
+                  onClick={() => handleLocationSelect(result)}
+                  className="w-full p-2 text-left hover:bg-white/10 flex items-center space-x-2"
+                >
+                  <MapPin className="w-4 h-4 text-gray-400" />
+                  <span className="text-sm text-gray-200 truncate">
+                    {result.display_name}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Bottom Navigation */}
       <motion.div
@@ -388,9 +535,43 @@ const UserView: React.FC = () => {
         )}
       </div>
       )}
+
+{searchResults.length > 0 && (
+  <div className="max-h-48 overflow-y-auto bg-gray-800/50 rounded-md mt-2">
+    {searchResults.slice(0, 5).map((result, index) => (
+      <button
+        key={index}
+        onClick={() => handleLocationSelect(result)}
+        className="w-full p-2 text-left hover:bg-white/10 flex items-center space-x-2"
+      >
+        <MapPin className="w-4 h-4 text-gray-400" />
+        <span className="text-sm text-gray-200 truncate">
+          {result.display_name}
+        </span>
+      </button>
+    ))}
+    {/* Display active drivers as selectable options */}
+    {getActiveDriverLocations().map((driver) => (
+      <button
+        key={driver.id}
+        onClick={() => handleLocationSelect({ display_name: `Driver ${driver.id}`, lat: driver.position[0], lon: driver.position[1] })}
+        className="w-full p-2 text-left hover:bg-white/10 flex items-center space-x-2"
+      >
+        <MapPin className="w-4 h-4 text-gray-400" />
+        <span className="text-sm text-gray-200 truncate">
+          Driver {driver.id} (Active)
+        </span>
+      </button>
+    ))}
+      </div>
+)}
       
     </div>
   );
 };
 
 export default UserView;
+
+
+
+
